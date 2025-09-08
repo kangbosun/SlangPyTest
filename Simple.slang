@@ -1,12 +1,13 @@
 
-// A simple function that adds two numbers together
-float add(float a, float b)
+
+
+void copy(float3 src, out float4 dest)
 {
-    return a + b;
+    dest = float4(src, 1.0);
 }
 
 // Add an amount to a given pixel
-void brighten(float4 amount, inout float4 pixel)
+void brighten(float3 amount, inout float4 pixel)
 {
-    pixel += amount;
+    pixel.rgb += amount;
 }

@@ -26,11 +26,23 @@ class MipmapRenderer(Renderer):
             app.device, data_path.joinpath("PavingStones070_2K.roughness.jpg"), grayscale=True
         )
 
+        self.downsampled_albedo = self.downsample(self.albedo_map, 2)
+        self.downsampled_normal = self.downsample(self.normal_map, 2)
+        self.downsampled_roughness = self.downsample(self.roughness_map, 2)
+
+        self.trained_albedo = spy.Tensor.empty_like(self.downsampled_albedo)
+        self.trained_normal = spy.Tensor.empty_like(self.downsampled_normal)
+        self.trained_roughness = spy.Tensor.empty_like(self.downsampled_roughness)
+
+        self.albedo_grad = spy.Tensor.empty_like(self.downsampled_albedo)
+        self.normal_grad = spy.Tensor.empty_like(self.downsampled_normal)
+        self.roughness_grad = spy.Tensor.empty_like(self.downsampled_roughness)
+
         self.downsample_steps = 2
-        spy.ui.InputInt(app.ui_window, "Downsample Steps", value=self.downsample_steps, callback=self.on_downsample_steps_changed)
+        # spy.ui.InputInt(app.ui_window, "Downsample Steps", value=self.downsample_steps, callback=self.on_downsample_steps_changed)
 
         self.material_mode = 0
-        spy.ui.ComboBox(app.ui_window, "Material Mode", items=["Reference", "Real Render", "Loss"], callback=self.on_material_changed)
+        spy.ui.ComboBox(app.ui_window, "Material Mode", items=["all", "Reference", "Real Render", "Loss"], callback=self.on_material_changed)
 
         self.stretch = False
         spy.ui.CheckBox(app.ui_window, "Stretch", value=self.stretch, callback=self.on_stretch_changed)
@@ -105,7 +117,6 @@ class MipmapRenderer(Renderer):
         
         ref_output = self.downsample(ref_output, self.downsample_steps)
 
-
         downscaled_width = self.albedo_map.shape[1] // (2 ** self.downsample_steps)
         downscaled_height = self.albedo_map.shape[0] // (2 ** self.downsample_steps)
 
@@ -114,9 +125,9 @@ class MipmapRenderer(Renderer):
         view_scale = 1.0
         self.mipmap_module.render(pixel=spy.call_id(),
             material = {
-                "albedo": self.downsample(self.albedo_map, self.downsample_steps),
-                "normal": self.downsample(self.normal_map, self.downsample_steps),
-                "roughness": self.downsample(self.roughness_map, self.downsample_steps),
+                "albedo": self.downsampled_albedo,
+                "normal": self.downsampled_normal,
+                "roughness": self.downsampled_roughness,
                 "metallic": self.metallic
             },
             light_dir=spy.math.normalize(spy.float3(0.2, 0.2, 1.0)),
@@ -124,22 +135,30 @@ class MipmapRenderer(Renderer):
             view_scale=view_scale,
             _result=real_output
             )
-        
+
+
         loss_output = spy.Tensor.empty_like(real_output)
         self.mipmap_module.loss(ref_output, real_output, _result=loss_output)
+
         
-        output = ref_output
 
-        if self.material_mode == 1: # Real
-            output = real_output
-        elif self.material_mode == 2: # Loss
-            output = loss_output
-
-        size = spy.int2(output.shape[0], output.shape[1])
-        if self.stretch:
-            size = spy.int2(app.output_texture.width, app.output_texture.height)
-
-        self.blit(output, app.output_texture, size=size, tonemap=True, bilinear=False)
+        if self.material_mode == 0: # all
+            ypos = 0
+            xpos = 0
+            self.blit(ref_output, app.output_texture, size=spy.int2(ref_output.shape[0], ref_output.shape[1]), tonemap=True, bilinear=True)
+            xpos += ref_output.shape[1] + 10
+            self.blit(real_output, app.output_texture, size=spy.int2(real_output.shape[0], real_output.shape[1]), offset=spy.int2(xpos, ypos), tonemap=True, bilinear=True)
+            xpos += real_output.shape[1] + 10
+            self.blit(loss_output, app.output_texture, size=spy.int2(loss_output.shape[0], loss_output.shape[1]), offset=spy.int2(xpos, ypos), tonemap=True, bilinear=True)
+        elif self.material_mode == 1: # Reference
+            size = spy.int2(app.output_texture.width, app.output_texture.height) if self.stretch else spy.int2(ref_output.shape[0], ref_output.shape[1])
+            self.blit(ref_output, app.output_texture, size=size, tonemap=True, bilinear=True)
+        elif self.material_mode == 2: # Real
+            size = spy.int2(app.output_texture.width, app.output_texture.height) if self.stretch else spy.int2(real_output.shape[0], real_output.shape[1])
+            self.blit(real_output, app.output_texture, size=size, tonemap=True, bilinear=True)
+        elif self.material_mode == 3: # Loss
+            size = spy.int2(app.output_texture.width, app.output_texture.height) if self.stretch else spy.int2(loss_output.shape[0], loss_output.shape[1])
+            self.blit(loss_output, app.output_texture, size=size, tonemap=True, bilinear=True)
 
         return super().render(app)
 

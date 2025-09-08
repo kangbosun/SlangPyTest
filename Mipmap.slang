@@ -31,7 +31,7 @@ float3 render(int2 pixel, MaterialParameters material, float3 light_dir, float3 
     int2 scaled_pixel = int2(pixel.x * view_scale.x, pixel.y * view_scale.y);
 
     float3 brdf_eval = eval_brdf(
-        float3(0.2),// material.get_albedo(scaled_pixel),
+        material.get_albedo(scaled_pixel),
         normalize(light_dir),
         normalize(view_dir),
         normalize(material.get_normal(scaled_pixel)),
