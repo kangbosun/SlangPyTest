@@ -58,3 +58,8 @@ void blit(
 
     }
 }
+
+float3 diff(float3 a, float3 b)
+{
+    return abs(a - b);
+}

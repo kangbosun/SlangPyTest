@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 import slangpy as spy
+import time
 from pathlib import Path
 
 EXAMPLE_DIR = Path(__file__).parent
@@ -14,7 +15,7 @@ class Renderer:
 class App:
     def __init__(self):
         super().__init__()
-        self.window = spy.Window(width=1920, height=1280, title="Example", resizable=True)
+        self.window = spy.Window(width=1920, height=1024, title="Example", resizable=True)
 
         device_type = spy.DeviceType.automatic
         self.device = spy.create_device(
@@ -39,16 +40,21 @@ class App:
 
         self.renderer = None
 
+        self.max_fps = 60
+        self.frame_timer = 0.0
+
         self.setup_ui()
 
-    def set_renderer(self, rendrer:Renderer):
-        self.renderer = rendrer
+    def set_renderer(self, renderer:Renderer):
+        self.renderer = renderer
 
     def setup_ui(self):
         screen = self.ui.screen
         self.ui_window = spy.ui.Window(screen, "Settings", size=spy.float2(500, 300), position=spy.float2(1400, 5))
 
         self.fps_text = spy.ui.Text(self.ui_window, "FPS: 0")
+
+        self.max_fps_slider = spy.ui.SliderInt(self.ui_window, "Max FPS", value=self.max_fps, callback=self.on_max_fps_changed, min=1, max=240)
         
     def on_keyboard_event(self, event: spy.KeyboardEvent):
         if self.ui.handle_keyboard_event(event):
@@ -86,9 +92,12 @@ class App:
         self.device.wait()
         self.surface.configure(width=width, height=height)
 
+    def on_max_fps_changed(self, value: int):
+        self.max_fps = value
+
     def run(self):
         frame = 0
-        time = 0.0
+        cur_time = 0.0
         timer = spy.Timer()
 
         while not self.window.should_close():
@@ -99,10 +108,16 @@ class App:
             timer.reset()
 
             if self.playing:
-                time += elapsed
+                cur_time += elapsed
 
-            self.fps_avg = 0.95 * self.fps_avg + 0.05 * (1.0 / elapsed)
-            self.fps_text.text = f"FPS: {self.fps_avg:.2f}"
+            target_frame_time = 1.0 / self.max_fps
+            self.frame_timer += elapsed
+            if self.frame_timer < target_frame_time:
+                continue
+            else:
+                self.fps_avg = 0.9 * self.fps_avg + 0.1 * (1.0 / self.frame_timer)
+                self.fps_text.text = f"FPS: {self.fps_avg:.2f}"
+                self.frame_timer -= target_frame_time
 
             surface_texture = self.surface.acquire_next_image()
             if not surface_texture:
