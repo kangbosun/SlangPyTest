@@ -35,8 +35,15 @@ void blit(
 
     float2 uv = pixel_to_uv(pixel, size);
 
+    {
+        //uv = uv / scale;
+    }
+
+    uv = saturate(uv);
+
     uint[2] shape = input.shape;
 
+    bilinear = true;
     float3 col = bilinear ?
         input.sample(uv) :
         input.getv(uint2(float2(shape[1], shape[0]) * uv));

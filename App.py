@@ -7,6 +7,7 @@ from pathlib import Path
 EXAMPLE_DIR = Path(__file__).parent
 
 class Renderer:
+    def tick(self, app) -> None : ...
     def pre_render(self, app) -> None : ...
     def render(self, app) -> None : ...
     def post_render(self, app) -> None : ...
@@ -33,6 +34,7 @@ class App:
 
         self.playing = True
         self.fps_avg = 0.0
+        self.tps_avg = 0.0
 
         self.window.on_keyboard_event = self.on_keyboard_event
         self.window.on_mouse_event = self.on_mouse_event
@@ -41,7 +43,6 @@ class App:
         self.renderer = None
 
         self.max_fps = 60
-        self.frame_timer = 0.0
 
         self.setup_ui()
 
@@ -50,11 +51,12 @@ class App:
 
     def setup_ui(self):
         screen = self.ui.screen
-        self.ui_window = spy.ui.Window(screen, "Settings", size=spy.float2(500, 300), position=spy.float2(1400, 5))
+        self.ui_window = spy.ui.Window(screen, "Settings", size=spy.float2(400, 540), position=spy.float2(1400, 5))
 
+        self.tick_rate_text = spy.ui.Text(self.ui_window, "TPS:")
         self.fps_text = spy.ui.Text(self.ui_window, "FPS: 0")
 
-        self.max_fps_slider = spy.ui.SliderInt(self.ui_window, "Max FPS", value=self.max_fps, callback=self.on_max_fps_changed, min=1, max=240)
+        self.max_fps_slider = spy.ui.SliderInt(self.ui_window, "Max FPS", value=self.max_fps, callback=self.on_max_fps_changed, min=15, max=60)
         
     def on_keyboard_event(self, event: spy.KeyboardEvent):
         if self.ui.handle_keyboard_event(event):
@@ -90,34 +92,50 @@ class App:
 
     def on_resize(self, width: int, height: int):
         self.device.wait()
-        self.surface.configure(width=width, height=height)
+        
+        if width > 0 and height > 0:
+            self.surface.configure(width=width, height=height, vsync=False)
+        else:
+            self.surface.unconfigure();
 
     def on_max_fps_changed(self, value: int):
         self.max_fps = value
 
     def run(self):
         frame = 0
-        cur_time = 0.0
-        timer = spy.Timer()
+        render_timer = spy.Timer()
+        tick_timer = spy.Timer()
 
-        while not self.window.should_close():
+
+        while not self.window.should_close():            
             self.window.process_events()
             self.ui.process_events()
 
-            elapsed = timer.elapsed_s()
-            timer.reset()
+            delta_time = render_timer.elapsed_s()
 
-            if self.playing:
-                cur_time += elapsed
+            if self.renderer is not None:
+                tick_time = tick_timer.elapsed_s()
+                if tick_time >= 1.0 / 1000.0: # 1000 TPS max
+                    tick_timer.reset()
+                    self.tps_avg = 0.9 * self.tps_avg + 0.1 * (1.0 / tick_time if tick_time > 0 else 0.0)
+                    self.tick_rate_text.text = f"TPS: {self.tps_avg:.1f}"
+            
+                    self.renderer.tick(self)
+
+            if self.surface.config is None:
+                continue
 
             target_frame_time = 1.0 / self.max_fps
-            self.frame_timer += elapsed
-            if self.frame_timer < target_frame_time:
+            
+            if delta_time < target_frame_time:
                 continue
-            else:
-                self.fps_avg = 0.9 * self.fps_avg + 0.1 * (1.0 / self.frame_timer)
-                self.fps_text.text = f"FPS: {self.fps_avg:.2f}"
-                self.frame_timer -= target_frame_time
+
+            render_timer.reset()
+            # FPS counter
+            current_fps = 1.0 / delta_time
+            self.fps_avg = 0.9 * self.fps_avg + 0.1 * current_fps
+
+            self.fps_text.text = f"FPS: {self.fps_avg:.1f}"
 
             surface_texture = self.surface.acquire_next_image()
             if not surface_texture:
