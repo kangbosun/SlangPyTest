@@ -1,12 +1,44 @@
 ## main_scalar.py
 
 import os
+import io
 import slangpy as spy
 import numpy as np
 import pathlib
 from pathlib import Path
 import Utils
 from App import App, Renderer
+import matplotlib.pyplot as plt
+
+# Global loss history struct for visualization key is epoch, value is loss
+class LossHistory:
+    def __init__(self):
+        self.history = []
+
+    def add(self, loss, epoch):
+        self.history.append((epoch, loss))
+
+    def clear(self):
+        self.history = []
+        plt.clf()
+
+    #visualize to memory
+    def visualize(self):
+        
+        epochs, losses = zip(*self.history)
+
+        plt.ion()
+        plt.plot(epochs, losses)
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Training Loss Over Epochs')
+                
+        #plt.show(block=False)
+        plt.pause(0.01)
+
+    def stop_visualize(self):
+        plt.ioff() 
+
 
 class MipmapRenderer(Renderer):
     def __init__(self, app: App):
@@ -26,6 +58,9 @@ class MipmapRenderer(Renderer):
         self.roughness_map = spy.Tensor.load_from_image(
             app.device, data_path.joinpath("PavingStones070_2K.roughness.jpg"), grayscale=True
         )
+
+        self.prev_mouse_pos = spy.float2()
+        self.view_offset = spy.int2(0, 0)
        
         self.light_dir = spy.math.normalize(spy.float3(0.2, 0.2, 1.0))
         self.ref_output = None
@@ -39,9 +74,12 @@ class MipmapRenderer(Renderer):
 
         self.init_textures(app)
 
+        self.view_offset = spy.int2(0, 0)
+
         ui_group_view = spy.ui.Group(app.ui_window, "View")
         self.view_mode = 0
-        self.view_combobox = spy.ui.ComboBox(ui_group_view, "View Mode", items=["trained", "gradient", "mean", "variance"], callback=self.on_view_mode_changed)
+
+        self.view_combobox = spy.ui.ComboBox(ui_group_view, "Compare to", items=["Rendered->Downsampled", "Downsampled->Rendered"], callback=self.on_view_mode_changed)
 
         self.view_scale = 1
         spy.ui.SliderFloat(ui_group_view, "View Scale", value=self.view_scale, callback=lambda v: setattr(self, 'view_scale', v), min=0.25, max=8.0)
@@ -49,7 +87,7 @@ class MipmapRenderer(Renderer):
         # self.stretch = False
         # spy.ui.CheckBox(ui_group_view, "Stretch", value=self.stretch, callback=self.on_stretch_changed)
 
-        self.light_dir_drag = spy.ui.DragFloat3(ui_group_view, "Light Dir", value=self.light_dir, min=-1.0, max=1.0, speed=0.05, callback=lambda v: setattr(self, 'light_dir', spy.math.normalize(v)))
+        self.light_dir_drag = spy.ui.DragFloat3(ui_group_view, "Light Dir", value=self.light_dir, min=-1.0, max=1.0, speed=0.05, callback=self.on_light_dir_changed)
 
         self.metallic = 0.0
         spy.ui.SliderFloat(ui_group_view, "Metallic", value=self.metallic, callback=self.on_metallic_changed, min=0.0, max=1.0)
@@ -57,8 +95,8 @@ class MipmapRenderer(Renderer):
         spy.ui.Text(app.ui_window, " ")
 
         ui_group_training = spy.ui.Group(app.ui_window, "Training")
-        self.max_epoch = 3000
-        self.current_epoch = 0
+        self.max_epoch = 20
+        self.current_epoch = 1
         spy.ui.InputInt(ui_group_training, "Max epoch", value=self.max_epoch, callback=lambda v: setattr(self, 'max_epoch', v))
 
         self.learning_rate = 0.002
@@ -71,6 +109,19 @@ class MipmapRenderer(Renderer):
         self.train_button = spy.ui.Button(ui_group_training, "Train", callback=self.on_train_clicked)
 
         self.progressbar = spy.ui.ProgressBar(ui_group_training, fraction=0.0)
+
+        self.avg_loss = 0.0
+        self.loss_format = "Loss avg: {0:.4f}| max: {1:.4f}"
+        self.loss_text = spy.ui.Text(ui_group_training, self.loss_format.format(0.0, 0.0))
+
+        self.loss_history = LossHistory()
+
+        self.presampled_light_dirs = []
+        for i in range(100):
+            light_dir_np = Utils.sample_cosine_weighted_hemisphere(i, period=30)
+            self.presampled_light_dirs.append(spy.float3(light_dir_np[0], light_dir_np[1], light_dir_np[2]))
+
+        self.current_light_dir_index = 0
 
         spy.ui.Button(ui_group_training, "Reset", callback=self.on_reset_clicked)
 
@@ -97,6 +148,7 @@ class MipmapRenderer(Renderer):
         self.normal_variance = spy.Tensor.zeros_like(self.downsampled_normal)
         self.roughness_mean = spy.Tensor.zeros_like(self.downsampled_roughness)
         self.roughness_variance = spy.Tensor.zeros_like(self.downsampled_roughness)
+        self.rendered_output = None
 
     def on_downsample_steps_changed(self, value: int):
         self.downsample_steps = value
@@ -117,8 +169,12 @@ class MipmapRenderer(Renderer):
         print(self.view_mode)
 
     def set_light_dir(self, value: spy.float3):
-        self.light_dir = spy.math.normalize(value)
+        self.on_light_dir_changed(value)
         self.light_dir_drag.value = self.light_dir
+
+    def on_light_dir_changed(self, value: spy.float3):
+        self.light_dir = spy.math.normalize(value)
+        self.ref_output = None
 
     def on_reset_clicked(self):
         self.mipmap_module.init3(self.trained_albedo, spy.float3(0.5, 0.5, 0.5))
@@ -140,13 +196,17 @@ class MipmapRenderer(Renderer):
 
         self.set_light_dir(spy.float3(0.2, 0.2, 1.0))
 
-        self.current_epoch = 0
+        self.current_epoch = 1
         self.progressbar.fraction = 0.0
+
+        self.loss_history.clear()
+        self.loss_text.text = self.loss_format.format(0.0, 0.0)
         self.pause_train()
 
     def pause_train(self):
         self.train_button.label = "Train"
         self.is_training = False
+        self.loss_history.stop_visualize()
         print("Training paused.")
 
     def resume_train(self):
@@ -179,17 +239,26 @@ class MipmapRenderer(Renderer):
     def blit(self, source: spy.Tensor, output:spy.Texture, size: spy.int2 = None, offset: spy.int2 = None, tonemap: bool = True, bilinear: bool = False):
         if len(source.shape) != 2:
             raise ValueError("Source tensor must be 2D (height, width).")
-
-        org_size = spy.int2(source.shape[1], source.shape[0])
-
+        
         target_size = size if size is None else size
-
-        scale = spy.float2(org_size.x / target_size.x, org_size.y / target_size.y)
 
         if offset is None:
             offset = spy.int2(0, 0)
 
         self.app_module.blit(
+            spy.grid((target_size.x, target_size.y)), target_size, offset, tonemap, bilinear, source, output
+        )
+
+    def blit1(self, source: spy.Tensor, output:spy.Texture, size: spy.int2 = None, offset: spy.int2 = None, tonemap: bool = True, bilinear: bool = False):
+        if len(source.shape) != 2:
+            raise ValueError("Source tensor must be 2D (height, width).")
+
+        target_size = size if size is None else size
+
+        if offset is None:
+            offset = spy.int2(0, 0)
+
+        self.app_module.blit1(
             spy.grid((target_size.x, target_size.y)), target_size, offset, tonemap, bilinear, source, output
         )
 
@@ -211,7 +280,6 @@ class MipmapRenderer(Renderer):
             },
             light_dir=light_dir,
             view_dir=spy.float3(0, 0, 1),
-
             _result=ref_output
             )
         
@@ -219,22 +287,25 @@ class MipmapRenderer(Renderer):
         return ref_output
     
     def train(self, app: App, light_dir: spy.float3):
-        #print(f"Training epoch {self.current_epoch+1}/{self.max_epoch}")
-        self.current_epoch += 1
-        self.mipmap_module.calculate_grad(0, 
-        pixel=spy.call_id(),
-        reference=self.ref_output,
-        material={
-            "albedo": self.trained_albedo,
-            "normal": self.trained_normal,
-            "roughness": self.trained_roughness,
-            "metallic": self.metallic,
-            "albedo_grad": self.albedo_grad,
-            "normal_grad": self.normal_grad,
-            "roughness_grad": self.roughness_grad,
-        },
-        light_dir=light_dir,
-        view_dir=spy.float3(0, 0, 1),
+        #print(f"Training epoch {self.current_epoch+1}/{self.max_epoch}")        
+        width = self.trained_albedo.shape[1]
+        height = self.trained_albedo.shape[0]
+
+        self.loss_output = spy.Tensor.empty(app.device, (width, height), 'float3')
+        self.loss_output = self.mipmap_module.calculate_grad(0, 
+            pixel=spy.call_id(),
+            reference=self.ref_output,
+            material={
+                "albedo": self.trained_albedo,
+                "normal": self.trained_normal,
+                "roughness": self.trained_roughness,
+                "metallic": self.metallic,
+                "albedo_grad": self.albedo_grad,
+                "normal_grad": self.normal_grad,
+                "roughness_grad": self.roughness_grad,
+            },
+            light_dir=light_dir,
+            view_dir=spy.float3(0, 0, 1),
         )
     
         # optimize
@@ -246,34 +317,54 @@ class MipmapRenderer(Renderer):
             self.mipmap_module.optimizer_sgd3(self.trained_albedo, self.albedo_grad, self.learning_rate, False)
             self.mipmap_module.optimizer_sgd3(self.trained_normal, self.normal_grad, self.learning_rate, True)
             self.mipmap_module.optimizer_sgd1(self.trained_roughness, self.roughness_grad, self.learning_rate)
-
-        self.progressbar.fraction = self.current_epoch / self.max_epoch
-
-        if self.current_epoch >= self.max_epoch:
-            self.pause_train()
-            self.set_light_dir(spy.float3(0.2, 0.2, 1.0))
-            print("Training completed.")
     
+    def update_loss(self):        
+        if self.is_training == False:
+            return
+        #loss calculation using np
+        loss_np = self.loss_output.to_numpy()
+        loss_max = np.max(loss_np)
+        loss = np.mean(loss_np) 
+
+        if self.is_training is True:
+            self.loss_text.text = self.loss_format.format(loss, loss_max)
+            self.loss_history.add(loss, self.current_epoch)
+            self.loss_history.visualize()
+
     def tick(self, app) :
+        if app.mouse_down:
+            delta = app.mouse_pos - self.prev_mouse_pos
+            self.view_offset += spy.int2(int(delta.x), int(delta.y))
+        self.prev_mouse_pos = app.mouse_pos
+
         should_run_training = self.is_training and self.current_epoch < self.max_epoch
         #create random light direction with numpy
         if should_run_training :
-            light_dir_np = Utils.sample_cosine_weighted_hemisphere()
-            self.set_light_dir(spy.float3(light_dir_np[0], light_dir_np[1], light_dir_np[2]))
+            light_dir_np = self.presampled_light_dirs[self.current_light_dir_index]
+            self.set_light_dir(light_dir_np)
             self.ref_output = self.render_reference(app, self.light_dir)
 
             self.train(app, self.light_dir)
 
+            self.current_light_dir_index += 1
+            if self.current_light_dir_index >= len(self.presampled_light_dirs):
+                self.current_light_dir_index = 0
+                self.current_epoch += 1
+                self.update_loss()
+                self.progressbar.fraction = self.current_epoch / self.max_epoch
+                if self.current_epoch >= self.max_epoch:
+                    self.pause_train()
+         
     def render(self, app: App):
-        self.ref_output = self.render_reference(app, self.light_dir)
-
+        if self.ref_output is None:
+            self.ref_output = self.render_reference(app, self.light_dir)
         self.mipmap_module.clear(spy.float4(0.0), app.output_texture)
 
         width = self.trained_albedo.shape[1]
         height = self.trained_albedo.shape[0]
-
-        rendered_output = spy.Tensor.empty(app.device, (width, height), 'float3')
-        self.mipmap_module.render(pixel=spy.call_id(),
+        
+        self.rendered_output = spy.Tensor.empty(app.device, (width, height), 'float3')
+        self.rendered_output = self.mipmap_module.render(pixel=spy.call_id(),
             material = {
                 "albedo": self.trained_albedo,
                 "normal": self.trained_normal,
@@ -282,50 +373,57 @@ class MipmapRenderer(Renderer):
             },
             light_dir=self.light_dir,
             view_dir=spy.float3(0, 0, 1),
-            _result=rendered_output
-            )
-
+            _result=self.rendered_output
+            )        
 
         out_size = spy.int2((int)(self.ref_output.shape[0] * self.view_scale), (int)(self.ref_output.shape[1] * self.view_scale))
-        # show reference
+        xpos = int(self.view_offset.x * self.view_scale)
+        ypos = int(self.view_offset.y * self.view_scale)
 
-        self.blit(self.ref_output, app.output_texture, size=out_size, offset=spy.int2(0, 0), tonemap=True, bilinear=True)
-        xpos = out_size.x + 10
-        ypos = 0
+        out_size = spy.int2((int)(out_size.x / 1.5), (int)(out_size.y / 1.5))
+        if self.view_mode == 0: # Rendered->Downsampled
+            # albedo,normal, roughness, rendered order
+            self.blit(self.albedo_map, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=False)
+            xpos += out_size.x + 10
+            self.blit(self.normal_map, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=False)
+            xpos += out_size.x + 10
+            self.blit1(self.roughness_map, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=False)
+            xpos += out_size.x + 20
+            self.blit(self.ref_output, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=True, bilinear=False)
+        elif self.view_mode == 1: # Downsampled->Rendered
+            rendered_after_downsampled = spy.Tensor.empty(app.device, (width, height), 'float3')
+            self.mipmap_module.render(pixel=spy.call_id(),
+                material = {
+                    "albedo": self.downsampled_albedo,
+                    "normal": self.downsampled_normal,
+                    "roughness": self.downsampled_roughness,
+                    "metallic": self.metallic
+                },
+                light_dir=self.light_dir,
+                view_dir=spy.float3(0, 0, 1),
+                _result=rendered_after_downsampled
+                )
 
-        self.blit(rendered_output, app.output_texture, size=out_size, offset=spy.int2(xpos, 0), tonemap=True, bilinear=True)  
-        xpos = 0
-        ypos = out_size.y + 10
+            self.blit(self.downsampled_albedo, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=False)
+            xpos += out_size.x + 10
+            self.blit(self.downsampled_normal, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=False)
+            xpos += out_size.x + 10
+            self.blit1(self.downsampled_roughness, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=True, bilinear=False)
+            xpos += out_size.x + 20
+            self.blit(rendered_after_downsampled, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=True, bilinear=False)
 
-        if self.view_mode == 0: # trained
-            self.blit(self.trained_albedo, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=True)
-            xpos += out_size.x + 10
-            self.blit(self.trained_normal, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=True)
-            xpos += out_size.x + 10
-            #self.blit(self.roughness_grad, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=True)
+        xpos = int(self.view_offset.x * self.view_scale)
+        ypos += out_size.y + 50
 
-        elif self.view_mode == 1: # gradient
-            self.blit(self.albedo_grad, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=True)
-            xpos += out_size.x + 10
-            self.blit(self.normal_grad, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=True)
-            xpos += out_size.x + 10
-            #self.blit(self.trained_roughness, app.output_texture, size=spy.int2(self.downsampled_roughness.shape[0], self.downsampled_roughness.shape[1]), offset=spy.int2(xpos, ypos), tonemap=False, bilinear=True)
-        elif self.view_mode == 2: # mean
-            self.blit(self.albedo_mean, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=True)
-            xpos += out_size.x + 10
-            self.blit(self.normal_mean, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=True)
-            xpos += out_size.x + 10
-            #self.blit(self.roughness_mean, app.output_texture, size=spy.int2(self.downsampled_roughness.shape[0], self.downsampled_roughness.shape[1]), offset=spy.int2(xpos, ypos), tonemap=False, bilinear=True)
-        elif self.view_mode == 3: # variance
-            self.blit(self.albedo_variance, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=True)
-            xpos += out_size.x + 10
-            self.blit(self.normal_variance, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=True)
-            xpos += out_size.x + 10
-            #self.blit(self.roughness_variance, app.output_texture, size=spy.int2(self.downsampled_roughness.shape[0], self.downsampled_roughness.shape[1]), offset=spy.int2(xpos, ypos), tonemap=False, bilinear=True)
+        self.blit(self.trained_albedo, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=False)
+        xpos += out_size.x + 10
+        self.blit(self.trained_normal, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=False)
+        xpos += out_size.x + 10
+        self.blit1(self.trained_roughness, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=False)
+        xpos += out_size.x + 20
+        if self.rendered_output is not None:
+            self.blit(self.rendered_output, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=True, bilinear=False)
 
-        diff_output = spy.Tensor.empty(app.device, (width, height), 'float3')
-        self.app_module.diff(self.ref_output, rendered_output, _result=diff_output)
-        self.blit(diff_output, app.output_texture, size=out_size, offset=spy.int2(xpos, 0), tonemap=True, bilinear=True)
 
         return super().render(app)
 

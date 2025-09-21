@@ -12,7 +12,6 @@ class Renderer:
     def render(self, app) -> None : ...
     def post_render(self, app) -> None : ...
 
-
 class App:
     def __init__(self):
         super().__init__()
@@ -86,6 +85,7 @@ class App:
         elif event.type == spy.MouseEventType.button_down:
             if event.button == spy.MouseButton.left:
                 self.mouse_down = True
+                self.drag_start = self.mouse_pos
         elif event.type == spy.MouseEventType.button_up:
             if event.button == spy.MouseButton.left:
                 self.mouse_down = False

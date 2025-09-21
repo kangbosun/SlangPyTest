@@ -34,16 +34,10 @@ void blit(
     output.GetDimensions(output_dimensions.x, output_dimensions.y);
 
     float2 uv = pixel_to_uv(pixel, size);
-
-    {
-        //uv = uv / scale;
-    }
-
     uv = saturate(uv);
 
     uint[2] shape = input.shape;
 
-    bilinear = true;
     float3 col = bilinear ?
         input.sample(uv) :
         input.getv(uint2(float2(shape[1], shape[0]) * uv));
@@ -62,7 +56,37 @@ void blit(
     else
     {
         output[offset + pixel] = float4(col, 1.0f);
+    }
+}
 
+void blit1(int2 pixel, int2 size, int2 offset, bool tonemap, bool bilinear, Tensor<float, 2> input, RWTexture2D<float4> output)
+{
+    uint2 output_dimensions;
+    output.GetDimensions(output_dimensions.x, output_dimensions.y);
+
+    float2 uv = pixel_to_uv(pixel, size);
+    uv = saturate(uv);
+
+    uint[2] shape = input.shape;
+
+    float col = bilinear ?
+        input.sample(uv) :
+        input.getv(uint2(float2(shape[1], shape[0]) * uv));
+
+    col = abs(col);
+
+    if(tonemap)
+    {
+        col = tonemap_aces_film(float3(col)).x;
+    }
+
+    if(isnan(col))
+    {
+        output[offset + pixel] = float4(1,0,1,1);
+    }
+    else
+    {
+        output[offset + pixel] = float4(col.xxx, 1.0f);
     }
 }
 
