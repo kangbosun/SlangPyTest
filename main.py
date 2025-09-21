@@ -124,7 +124,6 @@ class MipmapRenderer(Renderer):
         for i in range(100):
             light_dir_np = Utils.sample_cosine_weighted_hemisphere(i, period=PERIOD)
             self.presampled_light_dirs.append(spy.float3(light_dir_np[0], light_dir_np[1], light_dir_np[2]))
-            self.presampled_light_dirs.append(spy.float3(light_dir_np[0], light_dir_np[1], light_dir_np[2]))
 
         self.current_light_dir_index = 0
 
