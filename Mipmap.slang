@@ -80,7 +80,7 @@ float3 loss(int2 pixel, no_diff float3 reference, no_diff MaterialParameters mat
 
 float3 calculate_grad(uint seed, int2 pixel, float3 reference, MaterialParameters material, float3 light_dir, float3 view_dir)
 {
-    float3 current_loss = loss(pixel, reference, material, light_dir, view_dir).x;
+    float3 current_loss = loss(pixel, reference, material, light_dir, view_dir);
 
     bwd_diff(loss)(pixel, reference, material, light_dir, view_dir, 1);
 

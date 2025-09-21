@@ -10,6 +10,8 @@ import Utils
 from App import App, Renderer
 import matplotlib.pyplot as plt
 
+VIEW_SIZE_SCALE = 1.5  # Scaling factor for output size
+
 # Global loss history struct for visualization key is epoch, value is loss
 class LossHistory:
     def __init__(self):
@@ -38,7 +40,8 @@ class LossHistory:
 
     def stop_visualize(self):
         plt.ioff() 
-
+# Vertical spacing constant for layout
+VERTICAL_SPACING = 50
 
 class MipmapRenderer(Renderer):
     def __init__(self, app: App):
@@ -95,7 +98,7 @@ class MipmapRenderer(Renderer):
         spy.ui.Text(app.ui_window, " ")
 
         ui_group_training = spy.ui.Group(app.ui_window, "Training")
-        self.max_epoch = 20
+        self.max_epoch = 30
         self.current_epoch = 1
         spy.ui.InputInt(ui_group_training, "Max epoch", value=self.max_epoch, callback=lambda v: setattr(self, 'max_epoch', v))
 
@@ -116,9 +119,11 @@ class MipmapRenderer(Renderer):
 
         self.loss_history = LossHistory()
 
+        PERIOD = 100
         self.presampled_light_dirs = []
         for i in range(100):
-            light_dir_np = Utils.sample_cosine_weighted_hemisphere(i, period=30)
+            light_dir_np = Utils.sample_cosine_weighted_hemisphere(i, period=PERIOD)
+            self.presampled_light_dirs.append(spy.float3(light_dir_np[0], light_dir_np[1], light_dir_np[2]))
             self.presampled_light_dirs.append(spy.float3(light_dir_np[0], light_dir_np[1], light_dir_np[2]))
 
         self.current_light_dir_index = 0
@@ -375,14 +380,14 @@ class MipmapRenderer(Renderer):
             view_dir=spy.float3(0, 0, 1),
             _result=self.rendered_output
             )        
-
         out_size = spy.int2((int)(self.ref_output.shape[0] * self.view_scale), (int)(self.ref_output.shape[1] * self.view_scale))
         xpos = int(self.view_offset.x * self.view_scale)
         ypos = int(self.view_offset.y * self.view_scale)
 
-        out_size = spy.int2((int)(out_size.x / 1.5), (int)(out_size.y / 1.5))
+        out_size = spy.int2((int)(out_size.x / VIEW_SIZE_SCALE), (int)(out_size.y / VIEW_SIZE_SCALE))
         if self.view_mode == 0: # Rendered->Downsampled
             # albedo,normal, roughness, rendered order
+            self.blit(self.albedo_map, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=False)
             self.blit(self.albedo_map, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=False)
             xpos += out_size.x + 10
             self.blit(self.normal_map, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=False)
@@ -413,7 +418,9 @@ class MipmapRenderer(Renderer):
             self.blit(rendered_after_downsampled, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=True, bilinear=False)
 
         xpos = int(self.view_offset.x * self.view_scale)
-        ypos += out_size.y + 50
+        ypos += out_size.y + VERTICAL_SPACING
+
+        self.blit(self.trained_albedo, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=False)
 
         self.blit(self.trained_albedo, app.output_texture, size=out_size, offset=spy.int2(xpos, ypos), tonemap=False, bilinear=False)
         xpos += out_size.x + 10
